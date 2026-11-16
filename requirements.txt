@@ -1,0 +1,5 @@
+streamlit>=1.30
+pytest>=7.0
+inference-sdk>=0.9
+pillow>=10.0
+pandas>=2.0
