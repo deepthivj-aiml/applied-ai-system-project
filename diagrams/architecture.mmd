@@ -1,0 +1,22 @@
+flowchart TD
+    User[Owner / Finder<br/>Streamlit UI] --> Intake[Intake<br/>pet attributes + opt-in location]
+    User --> Photo[Photo upload]
+    Photo --> Vision[Vision<br/>Roboflow Inference SDK<br/>live if API key, else DEMO fallback]
+    Vision --> Verifier[Verifier<br/>human-in-the-loop<br/>confirm / correct attributes]
+    Intake --> Verifier
+    Verifier --> Retriever[Retriever / RAG-lite<br/>keyword retrieval over<br/>data/knowledge + profiles]
+    Verifier --> Matcher[Matcher<br/>weighted score 0-100<br/>species gate + breed/colour/size/<br/>sex/markings/date/distance]
+    Retriever --> Matcher
+    Matcher --> Results[Ranked matches<br/>≥70 likely, 50-69 possible<br/>reasons + sources + fuzzed map]
+    Results --> Notifier[Notifier<br/>draft contact message only<br/>nothing sent]
+    Results --> Rewards[Rewards & Anonymous Hints<br/>pledge $0-$500, hints by case ID<br/>one eligible hint, claim code]
+    Matcher --> Log[Logging + ai_interactions.md<br/>agent trace per run]
+    Vision --> Log
+    subgraph Guardrails
+        G1[No definite identity claim]
+        G2[Fuzzed location ~500m]
+        G3[No contact details public]
+        G4[No money moves in app]
+    end
+    Results --> Guardrails
+    Rewards --> Guardrails

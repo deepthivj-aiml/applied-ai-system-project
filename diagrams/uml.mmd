@@ -1,0 +1,51 @@
+classDiagram
+    class PetProfile {
+        +str case_id
+        +str status
+        +str species
+        +str breed
+        +str colour
+        +str size
+        +str sex
+        +str markings
+        +str date
+        +float lat
+        +float lon
+        +str place_label
+    }
+    class VisionResult {
+        +str mode
+        +str model_id
+        +float confidence
+        +str species
+        +str breed
+        +list detections
+        +str note
+    }
+    class MatchResult {
+        +PetProfile profile
+        +int score
+        +list reasons
+        +str warning
+    }
+    class RewardPledge {
+        +str case_id
+        +float amount_usd
+        +str status
+    }
+    class Hint {
+        +str hint_id
+        +str case_id
+        +str hint_text
+        +bool helpful
+        +bool reward_eligible
+        +str claim_code
+    }
+    class Agent {
+        +run_match_flow(query, image_path, human_confirmed)
+    }
+    Agent --> VisionResult : produces
+    Agent --> MatchResult : produces
+    Agent --> PetProfile : matches
+    RewardPledge --> Hint : one eligible hint per case
+    PetProfile --> Hint : hints by case_id
