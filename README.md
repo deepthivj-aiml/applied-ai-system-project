@@ -93,7 +93,7 @@ is missing, PawPal falls back to the available dog details and location.
 
 | PawPal signal | Input compared | Role in PawPal |
 | --- | --- | --- |
-| VLM photo comparison | Query photo against candidate photos | Estimates visual identity similarity; contributes up to 90% when a photo score is available. |
+| VLM photo comparison | Query photo against candidate photos | Estimates visual identity similarity; uses 90% base weight when all three signals are present, with active weights renormalized when a signal is missing. |
 | Dog-detail matcher | Breed, colour, size, sex, and markings | Deterministic field comparison; used with distance when no VLM score is available. It does not use an LLM to interpret the description. |
 | AI message drafts | Report details and recent chat text | Writes an editable communication draft; it does not calculate the match score. |
 
@@ -171,3 +171,4 @@ The real-photo smoke check validates the sample files and prints score details.
 It calls the live VLM only when an OpenAI key is configured. The exact-photo
 case is an intentionally duplicated image control, not a real second sighting;
 the identity in the separate-photo case is unknown.
+
