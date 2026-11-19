@@ -7,6 +7,8 @@ import ssl
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from email.utils import formataddr
 
+from guardrails import redact_private_info
+
 BASE_DIR = Path(__file__).parent
 
 
@@ -178,6 +180,7 @@ def send_relay_notification(
 ):
     """Email a private message and reply link without exposing the sender email."""
     _load_local_env()
+    body = redact_private_info(body)
     host = os.getenv("SMTP_HOST", "").strip()
     sender = os.getenv("EMAIL_FROM", "").strip()
     if not host or not sender:

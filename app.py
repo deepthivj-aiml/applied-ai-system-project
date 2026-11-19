@@ -10,6 +10,10 @@ BASE_DIR = Path(__file__).parent
 sys.path.insert(0, str(BASE_DIR))
 
 from location import PRESET_LOCATIONS
+from guardrails import (
+    GuardrailError, match_warning, normalize_report_photo, resolve_report_photo,
+    safe_display, safe_public_text,
+)
 from matcher import feature_similarity, find_matches
 from report_store import (
     ReportStoreError, create_report, delete_owned_report, get_owned_report, get_report,
@@ -141,15 +145,15 @@ def _logout_user():
 
 
 def show_report(report, *, show_status=True):
-    photo = report.get("photo")
+    private_report = report
+    report = safe_display(report)
+    report["place_label"] = report.pop("location_display", "")
+    photo_path = resolve_report_photo(report.get("photo"), BASE_DIR)
+    photo = str(photo_path) if photo_path else None
     columns = st.columns([1, 2]) if photo else [None, None]
     if photo:
         with columns[0]:
-            photo_path = Path(photo)
-            if not photo_path.is_absolute():
-                photo_path = BASE_DIR / photo_path
-            if photo_path.is_file():
-                st.image(str(photo_path), width=300)
+            st.image(photo, width=300)
     with columns[1] if photo else st.container():
         title = f"{report.get('case_id', 'Report')}"
         if show_status:
@@ -162,38 +166,57 @@ def show_report(report, *, show_status=True):
         if report.get("sex"):
             details.append(f"{str(report['sex']).title()}")
         if details:
-            st.write(" · ".join(details))
+            st.text(" · ".join(details))
         if report.get("markings"):
-            st.write(f"Markings: {report['markings']}")
+            st.text(f"Markings: {report['markings']}")
         if report.get("place_label"):
-            st.write(f"Location: {report['place_label']}")
+            st.text(f"Location: {report['place_label']}")
         if report.get("photo_credit") and report.get("photo_source_url"):
             st.caption(f"Photo: [{report['photo_credit']}]({report['photo_source_url']}) · {report.get('photo_license', 'source license')}")
         if not photo:
             st.caption("No photo attached")
         owner_name = "Sample owner" if report.get("is_sample") else (
-            report.get("owner_name") or username_for_email(report.get("contact_email"))
+            report.get("owner_name") or username_for_email(private_report.get("contact_email"))
         )
         if not owner_name:
             owner_name = "Sample owner" if report.get("is_sample") else "Report owner"
-        st.caption(f"Listed by {owner_name}")
+        owner_name = safe_public_text(owner_name, 40) or "Report owner"
+        st.text(f"Listed by {owner_name}")
+
+
+def _persist_report_photo(case_id, normalized_bytes):
+    """Store a validated, metadata-free JPEG under a generated local filename."""
+    upload_dir = BASE_DIR / "data" / "uploads"
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    prefix = f"{case_id}-" if case_id else "new-"
+    destination = upload_dir / f"{prefix}{uuid.uuid4().hex}.jpg"
+    try:
+        destination.write_bytes(normalized_bytes)
+    except OSError as exc:
+        destination.unlink(missing_ok=True)
+        raise ReportStoreError("The photo could not be stored on this server.") from exc
+    return str(destination.relative_to(BASE_DIR))
 
 
 def add_report_tab():
     st.subheader("Add a dog report")
     account = _current_user()
     st.caption(
-        f"Your account email stays private. Reports will be saved under {account.get('username', 'your account')}."
+        "Your account email stays private. Reports will be saved under "
+        f"{safe_public_text(account.get('username'), 40) or 'your account'}."
     )
     with st.form("add_dog_report", clear_on_submit=True):
         status = st.radio("Report type", ["Lost", "Found"], horizontal=True, key="new_report_status")
-        breed = st.text_input("Breed or best guess")
-        colour = st.text_input("Colour")
+        breed = st.text_input("Breed or best guess", max_chars=80)
+        colour = st.text_input("Colour", max_chars=80)
         size = st.selectbox("Size", ["Small", "Medium", "Large", "Unknown"])
         sex = st.selectbox("Sex", ["Unknown", "Female", "Male"])
-        markings = st.text_input("Distinctive markings")
+        markings = st.text_input("Distinctive markings", max_chars=500)
         place = st.selectbox("Nearest public location", ["Choose a location"] + list(PRESET_LOCATIONS))
-        photo_upload = st.file_uploader("Dog photo (optional)", type=["jpg", "jpeg", "png", "webp"])
+        photo_upload = st.file_uploader(
+            "Dog photo (optional)", type=["jpg", "jpeg", "png", "webp"],
+            help="Up to 10 MB. Use an image focused on the dog; photo metadata is removed before saving.",
+        )
         submitted = st.form_submit_button("Save report", type="primary")
 
     if submitted:
@@ -208,6 +231,14 @@ def add_report_tab():
             st.error("Log in to add a report.")
             return
 
+        photo_bytes = None
+        if photo_upload:
+            try:
+                photo_bytes = normalize_report_photo(photo_upload.getvalue())
+            except GuardrailError as exc:
+                st.error(str(exc))
+                return
+
         latitude, longitude = PRESET_LOCATIONS[place]
         report = {
             "status": status.lower(), "species": "dog", "breed": breed.strip(),
@@ -216,16 +247,14 @@ def add_report_tab():
             "place_label": place, "contact_email": email,
             "owner_name": account.get("username", "PawPal member"),
         }
+        photo_path = None
         try:
+            if photo_bytes:
+                photo_path = _persist_report_photo(None, photo_bytes)
             saved = create_report(report)
-            if photo_upload:
-                upload_dir = BASE_DIR / "data" / "uploads"
-                upload_dir.mkdir(parents=True, exist_ok=True)
-                suffix = Path(photo_upload.name).suffix.lower() or ".jpg"
-                photo_path = upload_dir / f"{saved['case_id']}{suffix}"
-                photo_path.write_bytes(photo_upload.getvalue())
-                saved["photo"] = str(photo_path.relative_to(BASE_DIR))
-                update_report_photo(saved["case_id"], saved["photo"])
+            if photo_path:
+                saved["photo"] = photo_path
+                update_report_photo(saved["case_id"], photo_path)
             st.success(f"Report saved. Your case ID is **{saved['case_id']}**. Keep it to check for matches.")
             if status.lower() == "lost" and email:
                 email_result = send_case_id_email(email, saved["case_id"])
@@ -234,7 +263,9 @@ def add_report_tab():
                 else:
                     st.info(f"Email not sent: {email_result['message']}")
             show_report(saved)
-        except ReportStoreError as exc:
+        except (ReportStoreError, OSError) as exc:
+            if photo_path:
+                _remove_uploaded_photo(photo_path)
             st.error(str(exc))
 
 
@@ -254,11 +285,21 @@ def _save_private_attachment(upload):
     }
     if suffix not in signatures or not signatures[suffix]:
         raise MessageStoreError("Attach a valid PDF, JPG, JPEG, or PNG file.")
+    filename_stem = safe_public_text(Path(upload.name).stem, 100) or "attachment"
+    if suffix in {".jpg", ".jpeg", ".png"}:
+        try:
+            raw = normalize_report_photo(raw)
+        except GuardrailError as exc:
+            raise MessageStoreError(str(exc)) from exc
+        suffix = ".jpg"
+        safe_name = f"{filename_stem}.jpg"
+    else:
+        safe_name = f"{filename_stem}{suffix}"
     directory = BASE_DIR / "data" / "uploads" / "private-messages"
     directory.mkdir(parents=True, exist_ok=True)
     destination = directory / f"{uuid.uuid4().hex}{suffix}"
     destination.write_bytes(raw)
-    return str(destination.relative_to(BASE_DIR)), Path(upload.name).name
+    return str(destination.relative_to(BASE_DIR)), safe_public_text(safe_name, 128)
 
 
 def _resolve_private_attachment(value):
@@ -285,7 +326,10 @@ def private_message_form(report, key_suffix, source_report=None):
         return
 
     with st.expander("Send a private message"):
-        st.caption(f"Sending as {sender.get('username', 'your account')}. Emails stay private.")
+        st.caption(
+            f"Sending as {safe_public_text(sender.get('username'), 40) or 'your account'}. "
+            "Emails stay private."
+        )
         intent = st.selectbox(
             "Message type", ["Possible match", "Thank you / reunited"],
             key=f"message_intent_{key_suffix}",
@@ -463,9 +507,10 @@ def find_match_tab():
         with st.container(border=True):
             candidate_label = "Lost case" if candidate.get("status") == "lost" else "Found case"
             st.markdown(f"### {item['score']}% match · {candidate_label} {candidate['case_id']}")
+            st.warning(match_warning(item["score"]))
             show_report(candidate)
             if item.get("reasons"):
-                st.caption(" · ".join(item["reasons"]))
+                st.text(" · ".join(item["reasons"]))
             private_message_form(
                 candidate, f"match_{report['case_id']}_{candidate['case_id']}",
                 source_report=report,
@@ -508,7 +553,10 @@ def report_message_dialog(case_id):
         st.rerun()
     current_user = _current_user()
     sender_email = str(current_user.get("email") or "").strip()
-    st.caption(f"Sending as {current_user.get('username', 'your account')}; email stays hidden.")
+    st.caption(
+        f"Sending as {safe_public_text(current_user.get('username'), 40) or 'your account'}; "
+        "email stays hidden."
+    )
     if source and source.get("contact_email") and not source.get("is_sample"):
         if source.get("contact_email", "").casefold() != sender_email.casefold():
             st.error("Your account does not own the source report.")
@@ -709,7 +757,7 @@ def _available_chats():
             listing_label = f"{source_label} ↔ {target_label}"
         else:
             listing_label = f"Case {target_id}"
-        username = thread_info.get("other_username") or "PawPal member"
+        username = safe_public_text(thread_info.get("other_username"), 40) or "PawPal member"
         chats.append({
             "token": token, "thread": thread,
             "label": f"{listing_label} · {username}",
@@ -724,7 +772,7 @@ def _available_chats():
 def _render_chat_window(chat):
     thread = chat["thread"]
     token = chat["token"]
-    st.markdown(f"#### Chat · {chat['label']}")
+    st.text(f"Chat: {chat['label']}")
     st.caption("Private relay · email addresses are hidden")
     for message in thread["messages"]:
         own_message = message["sender_side"] == thread["side"]
@@ -732,7 +780,7 @@ def _render_chat_window(chat):
         with st.chat_message(role):
             st.caption("You" if own_message else "Other person")
             if message.get("body"):
-                st.write(message["body"])
+                st.text(message["body"])
             path = _resolve_private_attachment(message.get("attachment_path"))
             if path:
                 st.download_button(
@@ -985,8 +1033,8 @@ def manage_listing_card(report):
             index=0 if current_status == "Lost" else 1, horizontal=True,
             key=f"manage_status_{case_id}",
         )
-        breed = st.text_input("Breed or best guess", owned_report.get("breed", ""), key=f"manage_breed_{case_id}")
-        colour = st.text_input("Colour", owned_report.get("colour", ""), key=f"manage_colour_{case_id}")
+        breed = st.text_input("Breed or best guess", owned_report.get("breed", ""), max_chars=80, key=f"manage_breed_{case_id}")
+        colour = st.text_input("Colour", owned_report.get("colour", ""), max_chars=80, key=f"manage_colour_{case_id}")
         size_options = ["Unknown", "Small", "Medium", "Large"]
         sex_options = ["Unknown", "Female", "Male"]
         size = st.selectbox(
@@ -1000,7 +1048,8 @@ def manage_listing_card(report):
             key=f"manage_sex_{case_id}",
         )
         markings = st.text_input(
-            "Distinctive markings", owned_report.get("markings", ""), key=f"manage_markings_{case_id}",
+            "Distinctive markings", owned_report.get("markings", ""), max_chars=500,
+            key=f"manage_markings_{case_id}",
         )
         place = st.selectbox(
             "Nearest public location", locations,
@@ -1010,6 +1059,7 @@ def manage_listing_card(report):
         )
         new_photo = st.file_uploader(
             "Replace dog photo (optional)", type=["jpg", "jpeg", "png", "webp"],
+            help="Up to 10 MB. Use an image focused on the dog; photo metadata is removed before saving.",
             key=f"manage_photo_{case_id}",
         )
         save_changes = st.form_submit_button("Save changes", type="primary")
@@ -1018,12 +1068,15 @@ def manage_listing_card(report):
         latitude, longitude = PRESET_LOCATIONS.get(place, (owned_report["lat"], owned_report["lon"]))
         photo_path = None
         if new_photo:
-            upload_dir = BASE_DIR / "data" / "uploads"
-            upload_dir.mkdir(parents=True, exist_ok=True)
-            suffix = Path(new_photo.name).suffix.lower() or ".jpg"
-            destination = upload_dir / f"{case_id}-edit-{uuid.uuid4().hex}{suffix}"
-            destination.write_bytes(new_photo.getvalue())
-            photo_path = str(destination.relative_to(BASE_DIR))
+            try:
+                photo_bytes = normalize_report_photo(new_photo.getvalue())
+                photo_path = _persist_report_photo(case_id, photo_bytes)
+            except GuardrailError as exc:
+                st.error(str(exc))
+                return
+            except ReportStoreError as exc:
+                st.error(str(exc))
+                return
         try:
             update_owned_report(case_id, owner_email, {
                 "status": status.lower(), "breed": breed, "colour": colour,
@@ -1081,7 +1134,7 @@ if not _current_user():
     st.stop()
 
 account = _current_user()
-st.sidebar.markdown(f"**{account.get('username', 'PawPal member')}**")
+st.sidebar.text(safe_public_text(account.get("username"), 40) or "PawPal member")
 st.sidebar.caption("Your email is private to your account.")
 st.sidebar.button("Log out", key="pawpal_logout", on_click=_logout_user)
 

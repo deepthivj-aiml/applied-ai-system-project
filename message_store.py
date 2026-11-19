@@ -4,12 +4,10 @@ from pathlib import Path
 import re
 import secrets
 
+from guardrails import redact_private_info, safe_public_text
 from report_store import _connect
 
 _EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
-_EMAIL_IN_MESSAGE_RE = re.compile(
-    r"(?<![\w.+-])[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}(?![\w.-])"
-)
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS pawpal_message_threads (
     thread_id TEXT PRIMARY KEY,
@@ -74,13 +72,14 @@ def _ensure_schema(connection):
 def _validate_message(email, body, attachment_name=None):
     email = str(email or "").strip()
     body = str(body or "").strip()
+    attachment_name = safe_public_text(Path(attachment_name or "").name, 128)
     if not _EMAIL_RE.fullmatch(email):
         raise MessageStoreError("Enter a valid private email address for replies.")
     if not body and not attachment_name:
         raise MessageStoreError("Write a message or attach a file before sending.")
+    body = redact_private_info(body)
     if len(body) > 2000:
         raise MessageStoreError("Messages must be 2,000 characters or fewer.")
-    body = _EMAIL_IN_MESSAGE_RE.sub("[email hidden]", body)
     return email, body
 
 
@@ -91,6 +90,7 @@ def create_thread(
     """Start a private thread and return one-time opaque access links for both sides."""
     prune_expired_messages()
     sender_email, body = _validate_message(sender_email, body, attachment_name)
+    attachment_name = safe_public_text(Path(attachment_name or "").name, 128) or None
     recipient_email = str(recipient_email or "").strip()
     if not _EMAIL_RE.fullmatch(recipient_email):
         raise MessageStoreError("The report owner has no valid private email for messages.")
@@ -174,7 +174,10 @@ def get_thread(token, *, _skip_retention_check=False):
                 FROM pawpal_messages
                 WHERE thread_id=%s ORDER BY created_at, message_id
             """, (thread["thread_id"],))
-            messages = [dict(row) for row in cursor.fetchall()]
+            messages = [
+                {**dict(row), "body": redact_private_info(row.get("body", ""))}
+                for row in cursor.fetchall()
+            ]
         return {
             "thread_id": thread["thread_id"],
             "target_case_id": thread["target_case_id"],
@@ -192,12 +195,12 @@ def get_thread(token, *, _skip_retention_check=False):
 def reply_to_thread(token, body, *, attachment_path=None, attachment_name=None):
     """Append a reply and issue a fresh notification link for the other participant."""
     prune_expired_messages()
-    body = str(body or "").strip()
+    body = redact_private_info(str(body or "").strip())
+    attachment_name = safe_public_text(Path(attachment_name or "").name, 128) or None
     if not body and not attachment_name:
         raise MessageStoreError("Write a message or attach a file before sending.")
     if len(body) > 2000:
         raise MessageStoreError("Messages must be 2,000 characters or fewer.")
-    body = _EMAIL_IN_MESSAGE_RE.sub("[email hidden]", body)
 
     connection = _connect()
     try:

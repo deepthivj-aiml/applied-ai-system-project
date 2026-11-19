@@ -4,6 +4,8 @@ import os
 from pathlib import Path
 import re
 
+from guardrails import resolve_report_photo, safe_public_text
+from location import valid_latlon
 from retrieval import load_profiles
 
 BASE_DIR = Path(__file__).parent
@@ -32,6 +34,28 @@ CREATE TABLE IF NOT EXISTS pawpal_reports (
 
 class ReportStoreError(RuntimeError):
     """Database setup or report persistence failed."""
+
+
+def _clean_report_fields(report):
+    """Validate bounded public report fields before they reach PostgreSQL."""
+    size = safe_public_text(report.get("size") or "unknown", 16).lower()
+    sex = safe_public_text(report.get("sex") or "unknown", 16).lower()
+    if size not in {"unknown", "small", "medium", "large"}:
+        raise ReportStoreError("Choose small, medium, large, or unknown for dog size.")
+    if sex not in {"unknown", "female", "male"}:
+        raise ReportStoreError("Choose female, male, or unknown for dog sex.")
+    place_label = safe_public_text(report.get("place_label"), 120)
+    if not place_label:
+        raise ReportStoreError("Choose a public location without contact details or a street address.")
+    return {
+        "breed": safe_public_text(report.get("breed"), 80),
+        "colour": safe_public_text(report.get("colour"), 80),
+        "size": size,
+        "sex": sex,
+        "markings": safe_public_text(report.get("markings"), 500),
+        "place_label": place_label,
+        "owner_name": safe_public_text(report.get("owner_name"), 40),
+    }
 
 
 def _load_local_env():
@@ -147,6 +171,9 @@ def create_report(report):
         latitude, longitude = float(report["lat"]), float(report["lon"])
     except (KeyError, TypeError, ValueError) as exc:
         raise ReportStoreError("Choose a valid location before saving the report.") from exc
+    if not valid_latlon(latitude, longitude):
+        raise ReportStoreError("Choose a valid public location before saving the report.")
+    fields = _clean_report_fields(report)
 
     connection = _connect()
     try:
@@ -163,11 +190,9 @@ def create_report(report):
                 VALUES (%s, %s, 'dog', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING *
             """, (
-                case_id, status, str(report.get("breed") or "").strip(),
-                str(report.get("colour") or "").strip(), str(report.get("size") or "unknown").lower(),
-                str(report.get("sex") or "unknown").lower(), str(report.get("markings") or "").strip(),
-                latitude, longitude, str(report.get("place_label") or "").strip(),
-                contact_email, str(report.get("owner_name") or "").strip()[:40],
+                case_id, status, fields["breed"], fields["colour"], fields["size"],
+                fields["sex"], fields["markings"], latitude, longitude, fields["place_label"],
+                contact_email, fields["owner_name"],
                 bool(report.get("is_demo", False)),
             ))
             saved = dict(cursor.fetchone())
@@ -185,12 +210,16 @@ def create_report(report):
 
 def update_report_photo(case_id, photo_path):
     """Attach a locally saved photo path to a report."""
+    resolved_photo = resolve_report_photo(photo_path, BASE_DIR)
+    if not resolved_photo:
+        raise ReportStoreError("Choose an existing report photo inside the app's photo folders.")
+    stored_photo = str(resolved_photo.relative_to(BASE_DIR.resolve()))
     connection = _connect()
     try:
         with connection.cursor() as cursor:
             cursor.execute(
                 "UPDATE pawpal_reports SET photo=%s WHERE case_id=%s RETURNING case_id",
-                (str(photo_path), str(case_id).strip().upper()),
+                (stored_photo, str(case_id).strip().upper()),
             )
             if cursor.fetchone() is None:
                 raise ReportStoreError("Report was saved, but its photo could not be attached.")
@@ -214,6 +243,15 @@ def update_owned_report(case_id, owner_email, report):
         latitude, longitude = float(report["lat"]), float(report["lon"])
     except (KeyError, TypeError, ValueError) as exc:
         raise ReportStoreError("Choose a valid location before saving the report.") from exc
+    if not valid_latlon(latitude, longitude):
+        raise ReportStoreError("Choose a valid public location before saving the report.")
+    fields = _clean_report_fields(report)
+    photo_value = str(report.get("photo") or "").strip()
+    if photo_value:
+        resolved_photo = resolve_report_photo(photo_value, BASE_DIR)
+        if not resolved_photo:
+            raise ReportStoreError("Choose an existing report photo inside the app's photo folders.")
+        photo_value = str(resolved_photo.relative_to(BASE_DIR.resolve()))
 
     connection = _connect()
     try:
@@ -225,11 +263,9 @@ def update_owned_report(case_id, owner_email, report):
                 WHERE UPPER(case_id)=UPPER(%s) AND LOWER(contact_email)=LOWER(%s)
                 RETURNING *
             """, (
-                status, str(report.get("breed") or "").strip(),
-                str(report.get("colour") or "").strip(), str(report.get("size") or "unknown").lower(),
-                str(report.get("sex") or "unknown").lower(), str(report.get("markings") or "").strip(),
-                latitude, longitude, str(report.get("place_label") or "").strip(),
-                str(report.get("photo") or "").strip() or None,
+                status, fields["breed"], fields["colour"], fields["size"],
+                fields["sex"], fields["markings"], latitude, longitude, fields["place_label"],
+                photo_value or None,
                 str(case_id or "").strip(), str(owner_email or "").strip(),
             ))
             row = cursor.fetchone()

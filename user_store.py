@@ -5,6 +5,7 @@ import re
 import secrets
 import uuid
 
+from guardrails import safe_public_text
 from report_store import _connect
 
 _EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
@@ -104,6 +105,9 @@ def begin_registration(email, username, password):
         raise UserStoreError("Enter a valid email address.")
     if not 2 <= len(username) <= 40:
         raise UserStoreError("Username must be between 2 and 40 characters.")
+    if (not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 _.-]{1,39}", username)
+            or safe_public_text(username) != username):
+        raise UserStoreError("Use a public username without email addresses, phone numbers, or other contact details.")
     if len(password) < 10:
         raise UserStoreError("Password must have at least 10 characters.")
 
