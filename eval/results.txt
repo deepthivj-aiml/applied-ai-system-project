@@ -1,7 +1,4 @@
-PASS | Golden retriever lost -> found LF-002 | top=LF-002 score=100 expected=LF-002
-PASS | Tabby cat lost -> found LF-004 | top=LF-004 score=95 expected=LF-004
-PASS | Beagle lost -> found LF-006 | top=LF-006 score=95 expected=LF-006
-PASS | Black lab lost in Union City -> LF-008 surfaces at 75 despite sex/distance mismatch (KNOWN LIMIT: sex is only 5 pts) | top=LF-008 score=75 expected=LF-008
-PASS | Species mismatch -> no match | top=None score=0 expected=None
-PASS | Orange tabby found -> lost? none in DB (no lost orange tabby) | top=None score=0 expected=None
-SUMMARY: 6/6 passed
+PASS | Golden retriever near Lake Elizabeth | top=LF-002 score=100 expected=LF-002
+PASS | Beagle near Niles | top=LF-006 score=100 expected=LF-006
+PASS | Black lab near Union City | top=LF-008 score=57 expected=LF-008
+SUMMARY: 3/3 passed

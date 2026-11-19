@@ -4,4 +4,10 @@ __pycache__/
 .pytest_cache/
 .env
 logs/app.log
+.pytest-run-tmp/
+.local-postgres/
+data/uploads/
+.demo-message-links.json
+.pgpass.tmp
+.pgapp.tmp
 .DS_Store

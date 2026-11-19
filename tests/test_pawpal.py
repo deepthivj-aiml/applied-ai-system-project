@@ -1,111 +1,404 @@
+import json
 import sys
 from pathlib import Path
-sys.path.insert(0, str(Path(__file__).parent.parent))
-from location import haversine_km, fuzz_latlon, display_location
-from matcher import score_match, find_matches
-from guardrails import match_warning, safe_display, check_low_confidence
-from retrieval import retrieve, load_profiles
-from vision import analyse_image
-from rewards import create_pledge, submit_hint, mark_reunited_and_eligible, generate_claim_code, mark_claimed, claim_code_is_valid
-import pytest
 
-Q = {"species":"dog","breed":"golden retriever","colour":"golden","size":"large","sex":"male","markings":"white chest patch","date":"2026-11-10","lat":37.5515,"lon":-121.9678,"status":"lost"}
-C = {"case_id":"LF-002","species":"dog","breed":"golden retriever","colour":"golden","size":"large","sex":"male","markings":"white chest patch floppy ears","date":"2026-11-11","lat":37.5470,"lon":-121.9600,"status":"found"}
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from location import display_location, fuzz_latlon, haversine_km
+import email_service
+import message_drafts
+from matcher import find_matches, location_points, score_match, score_match_details
+import message_store
+import report_store
+import vlm_matcher
+from retrieval import load_profiles
+
+
+QUERY = {
+    "case_id": "LF-001", "species": "dog", "status": "lost",
+    "breed": "golden retriever", "colour": "golden", "size": "large",
+    "sex": "male", "markings": "white chest patch floppy ears",
+    "lat": 37.5515, "lon": -121.9678,
+}
+
 
 def test_haversine_same_point_zero():
-    assert haversine_km(37.5,-121.9,37.5,-121.9) == 0.0
+    assert haversine_km(37.5, -121.9, 37.5, -121.9) == 0.0
+
 
 def test_haversine_fremont_to_sanjose_about_20km():
-    d = haversine_km(37.5515,-121.9678,37.3382,-121.8863)
-    assert 20 < d < 30, d
+    distance = haversine_km(37.5515, -121.9678, 37.3382, -121.8863)
+    assert 20 < distance < 30
 
-def test_fuzzing_never_shows_exact_coords():
-    s = display_location(37.5515,-121.9678,"Central Park")
-    assert "37.5515" not in s and "-121.9678" not in s and "500 m" in s
-    flat, flon = fuzz_latlon(37.5515,-121.9678)
-    assert abs(flat-37.5515) <= 0.005 and abs(flon+121.9678) <= 0.005
 
-def test_species_mismatch_scores_zero():
-    q = dict(Q, species="cat")
-    score, reasons = score_match(q, C)
-    assert score == 0
+def test_public_location_does_not_show_exact_coordinates():
+    label = display_location(37.5515, -121.9678, "Central Park")
+    assert "37.5515" not in label and "-121.9678" not in label
+    lat, lon = fuzz_latlon(37.5515, -121.9678)
+    assert abs(lat - 37.5515) <= 0.005 and abs(lon + 121.9678) <= 0.005
 
-def test_full_match_scores_100():
-    score, reasons = score_match(Q, C)
-    assert score == 100, (score, reasons)
-    assert any("Breed matches" in r for r in reasons)
 
-def test_scoring_weights_breed_only():
-    c = dict(C, colour="black", size="small", sex="female", markings="none", date="2026-01-01", lat=37.0, lon=-122.5)
-    score, _ = score_match(Q, c)
-    assert score == 30, score  # breed only
+def test_match_score_gives_vlm_photo_90_percent_weight():
+    candidate = dict(QUERY, case_id="LF-002", status="found", lat=37.8, lon=-122.3)
+    score, _ = score_match(QUERY, candidate, photo_similarity=0)
+    assert score == 7  # exact features contribute 7; distant location contributes 0
 
-def test_date_proximity():
-    c = dict(C, date="2026-11-20")  # 10 days away, same other fields
-    score_far, _ = score_match(Q, c)
-    score_near, _ = score_match(Q, C)
-    assert score_near - score_far == 5
 
-def test_low_confidence_guardrail_wording():
-    w = match_warning(55)
-    assert "verify in person" in w.lower()
-    assert "does not confirm" in match_warning(85).lower() or "verify in person" in match_warning(85).lower()
+def test_location_points_use_distance_tiers():
+    assert location_points(0) == (3, "within 2 km")
+    assert location_points(2.1) == (2, "2–5 km")
+    assert location_points(5.1) == (1, "5–10 km")
+    assert location_points(10.1) == (0, "more than 10 km")
+    assert location_points(None) == (0, "Location unavailable")
 
-def test_safe_display_removes_contact_and_exact_location():
-    p = dict(C, phone="555-1234", email="a@b.com", lat=37.5470, lon=-121.96)
-    s = safe_display(p)
-    assert "phone" not in s and "email" not in s and "lat" not in s
-    assert "37.547" not in s.get("location_display","")
 
-def test_vision_demo_fallback_labelled():
-    v = analyse_image("/tmp/nonexistent.png", manual={"species":"dog","breed":"beagle"})
-    assert v["mode"] == "demo" and v["confidence"] is None
-    assert "DEMO" in v["note"] and "not a model prediction" in v["note"]
+def test_full_match_percentage_is_100():
+    candidate = dict(QUERY, case_id="LF-002", status="found")
+    details = score_match_details(QUERY, candidate, photo_similarity=100)
+    assert details["score"] == 100
+    assert details["feature_score"] == 100
+    assert details["location_points"] == 3
 
-def test_retrieval_returns_sources():
-    res = retrieve("golden retriever exercise lost dog")
-    assert res and all("source" in r for r in res)
 
-def test_find_matches_filters_below_threshold_and_same_status():
+def test_details_and_distance_are_used_when_vlm_score_is_missing():
+    candidate = dict(QUERY, case_id="LF-002", status="found")
+    score, reasons = score_match(QUERY, candidate)
+    assert score == 100
+    assert any("Dog features" in reason for reason in reasons)
+    assert any("Distance" in reason for reason in reasons)
+    assert any("70% of score" in reason for reason in reasons)
+    assert any("30% of score" in reason for reason in reasons)
+
+
+def test_missing_dog_fields_are_skipped_and_remaining_details_are_renormalized():
+    query = {"species": "dog", "status": "lost", "breed": "beagle"}
+    candidate = {
+        "case_id": "LF-002", "species": "dog", "status": "found", "breed": "beagle",
+        "colour": "", "size": "unknown", "sex": "unknown", "markings": "",
+    }
+
+    details = score_match_details(query, candidate)
+
+    assert details["score"] == 100
+    assert details["feature_score"] == 100
+    assert details["distance_km"] is None
+    assert any("100% of score" in reason and "missing fields skipped" in reason
+               for reason in details["reasons"])
+
+
+def test_location_can_rank_a_report_when_details_and_photos_are_missing():
+    query = {"case_id": "LF-001", "species": "dog", "status": "lost", "lat": 37.5515, "lon": -121.9678}
+    candidate = {
+        "case_id": "LF-002", "species": "dog", "status": "found",
+        "lat": 37.5520, "lon": -121.9680,
+    }
+
+    results = find_matches(query, [candidate])
+
+    assert len(results) == 1
+    assert results[0]["feature_score"] is None
+    assert results[0]["photo_score"] is None
+    assert results[0]["score"] == 100
+    assert results[0]["location_points"] == 3
+
+
+def test_report_without_any_comparable_evidence_is_omitted():
+    query = {"case_id": "LF-001", "species": "dog", "status": "lost"}
+    candidate = {"case_id": "LF-002", "species": "dog", "status": "found"}
+
+    assert find_matches(query, [candidate]) == []
+
+
+def test_find_matches_excludes_same_case_and_same_status_and_ranks_photo():
+    same_case = dict(QUERY)
+    same_status = dict(QUERY, case_id="LF-003")
+    better = dict(QUERY, case_id="LF-004", status="found")
+    worse = dict(QUERY, case_id="LF-005", status="found", colour="black")
+    results = find_matches(
+        QUERY, [same_case, same_status, better, worse],
+        photo_scores={"LF-004": 90, "LF-005": 100},
+    )
+    assert [result["profile"]["case_id"] for result in results] == ["LF-005", "LF-004"]
+    assert results[0]["score"] > results[1]["score"]
+
+
+def test_seed_data_has_expected_dog_match():
     profiles = load_profiles()
-    assert len(profiles) == 10
-    matches = find_matches(Q, profiles)
-    assert matches and matches[0]["profile"]["case_id"] == "LF-002"
-    assert all(m["score"] >= 50 for m in matches)
-    assert all(m["profile"]["status"] == "found" for m in matches)
+    results = find_matches(QUERY, profiles, photo_scores={"LF-002": 100})
+    assert results and results[0]["profile"]["case_id"] == "LF-002"
+    assert all(result["profile"]["status"] == "found" for result in results)
 
-# --- Rewards (4+ required) ---
-def test_reward_zero_means_no_reward():
-    p = create_pledge("LF-001", 0)
-    assert p["status"] == "none" and p["amount_usd"] == 0
-    h = submit_hint("LF-001", "Saw a golden near the lake")
-    with pytest.raises(ValueError):
-        mark_reunited_and_eligible([h], h["hint_id"], p)
 
-def test_reward_cap_500():
-    with pytest.raises(ValueError):
-        create_pledge("LF-001", 501)
-    assert create_pledge("LF-001", 500)["amount_usd"] == 500
+def test_get_report_uses_case_id_and_saved_reports(monkeypatch):
+    monkeypatch.setattr(report_store, "_database_reports", lambda: [
+        {"case_id": "LF-011", "status": "lost", "species": "dog", "contact_email": "person@example.com"}
+    ])
+    report = report_store.get_report(" lf-011 ")
+    assert report["case_id"] == "LF-011"
+    assert report["contact_email"] == "person@example.com"
 
-def test_only_one_eligible_hint():
-    p = create_pledge("LF-001", 100)
-    h1, h2 = submit_hint("LF-001","hint one"), submit_hint("LF-001","hint two")
-    out = mark_reunited_and_eligible([h1,h2], h1["hint_id"], p)
-    assert sum(1 for h in out if h["reward_eligible"]) == 1
-    with pytest.raises(ValueError):
-        mark_reunited_and_eligible(out, h2["hint_id"], p)
 
-def test_no_eligibility_before_reunion_and_claim_code_format():
-    p = create_pledge("LF-001", 100)
-    h = submit_hint("LF-001","hint")
-    assert not h["reward_eligible"] and h["claim_code"] is None
-    out = mark_reunited_and_eligible([h], h["hint_id"], p)
-    code = out[0]["claim_code"]
-    assert claim_code_is_valid(code)
-    assert generate_claim_code("LF-001") != generate_claim_code("LF-001")  # unique (random suffix)
-    claimed = mark_claimed(p, out[0])
-    assert claimed["status"] == "claimed"
+def test_find_match_candidates_are_dogs_only():
+    cat = dict(QUERY, case_id="LF-CAT", species="cat", status="found")
+    dog = dict(QUERY, case_id="LF-DOG", status="found")
+    results = find_matches(QUERY, [cat, dog])
+    assert [result["profile"]["case_id"] for result in results] == ["LF-DOG"]
+    assert find_matches(dict(QUERY, species="cat"), [dog]) == []
 
-def test_hint_is_anonymous_no_identity_fields():
-    h = submit_hint("LF-001","Saw dog at park", location_label="Lake Elizabeth")
-    assert "phone" not in h and "email" not in h and "name" not in h
+
+def test_vlm_batches_report_photos_in_one_request(monkeypatch, tmp_path):
+    from PIL import Image
+
+    query_photo = tmp_path / "query.png"
+    candidate_photo = tmp_path / "candidate.png"
+    Image.new("RGB", (40, 30), "brown").save(query_photo)
+    Image.new("RGB", (40, 30), "gold").save(candidate_photo)
+    query = dict(QUERY, photo=str(query_photo))
+    candidate = dict(QUERY, case_id="LF-002", status="found", photo=str(candidate_photo))
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            body = {"output": [{"type": "message", "content": [{
+                "type": "output_text",
+                "text": json.dumps({"matches": [{
+                    "case_id": "LF-002", "photo_similarity_percent": 94,
+                    "visual_reason": "Similar white chest marking and face shape.",
+                }]}),
+            }]}]}
+            return json.dumps(body).encode()
+
+    calls = {"count": 0}
+
+    def fake_urlopen(request, timeout):
+        calls["count"] += 1
+        sent = json.loads(request.data.decode())
+        assert request.full_url.endswith("/v1/responses")
+        assert sent["store"] is False
+        image_count = sum(
+            item.get("type") == "input_image"
+            for item in sent["input"][0]["content"]
+        )
+        assert image_count == 2
+        return FakeResponse()
+
+    monkeypatch.setattr(vlm_matcher, "urlopen", fake_urlopen)
+    result = vlm_matcher.compare_report_photos(query, [candidate])
+    assert result["status"] == "ok"
+    assert result["scores"] == {"LF-002": 94}
+    assert result["compared"] == 1
+    cached = vlm_matcher.compare_report_photos(query, [candidate])
+    assert cached["status"] == "cached"
+    assert calls["count"] == 1
+
+
+def test_vlm_missing_key_is_reported_without_network(monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    result = vlm_matcher.compare_report_photos(QUERY, [])
+    assert result["status"] == "not_configured"
+
+
+def test_lost_report_case_id_email_sends_only_case_identifier(monkeypatch):
+    sent = {}
+    monkeypatch.setenv("SMTP_HOST", "smtp.test.invalid")
+    monkeypatch.setenv("SMTP_PORT", "587")
+    monkeypatch.setenv("SMTP_USE_TLS", "false")
+    monkeypatch.setenv("SMTP_USERNAME", "test-user")
+    monkeypatch.setenv("SMTP_PASSWORD", "test-password")
+    monkeypatch.setenv("EMAIL_FROM", "pawpal@example.com")
+
+    class FakeSMTP:
+        def __init__(self, host, port, timeout):
+            assert (host, port) == ("smtp.test.invalid", 587)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def login(self, username, password):
+            assert username == "test-user" and password == "test-password"
+
+        def send_message(self, message):
+            sent["to"] = message["To"]
+            sent["subject"] = message["Subject"]
+            sent["body"] = message.get_content()
+
+    monkeypatch.setattr(email_service.smtplib, "SMTP", FakeSMTP)
+    result = email_service.send_case_id_email("owner@example.com", "LF-011")
+    assert result["sent"]
+    assert sent["to"] == "owner@example.com"
+    assert "LF-011" in sent["subject"] and "LF-011" in sent["body"]
+
+
+def test_case_id_email_stays_visible_in_app_when_smtp_not_configured(monkeypatch):
+    monkeypatch.delenv("SMTP_HOST", raising=False)
+    monkeypatch.delenv("EMAIL_FROM", raising=False)
+    result = email_service.send_case_id_email("owner@example.com", "LF-012")
+    assert not result["sent"]
+    assert "Keep the case ID" in result["message"]
+
+
+def test_private_message_redacts_addresses_from_message_body():
+    sender, body = message_store._validate_message(
+        "sender@example.com", "Please reply to sender@example.com about my dog."
+    )
+    assert sender == "sender@example.com"
+    assert "sender@example.com" not in body
+    assert "[email hidden]" in body
+
+
+def test_relay_email_hides_personal_email_and_uses_private_link(monkeypatch):
+    sent = {}
+    monkeypatch.setenv("SMTP_HOST", "smtp.test.invalid")
+    monkeypatch.setenv("SMTP_PORT", "587")
+    monkeypatch.setenv("SMTP_USE_TLS", "false")
+    monkeypatch.setenv("EMAIL_FROM", "relay@example.com")
+    monkeypatch.setenv("PAWPAL_PUBLIC_URL", "https://pawpal.example")
+
+    class FakeSMTP:
+        def __init__(self, host, port, timeout):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def send_message(self, message):
+            sent["to"] = message["To"]
+            sent["from"] = message["From"]
+            sent["body"] = message.get_content()
+
+    monkeypatch.setattr(email_service.smtplib, "SMTP", FakeSMTP)
+    result = email_service.send_relay_notification(
+        "recipient@example.com", "LF-011", "Hello, [email hidden]", "private-token"
+    )
+    assert result["sent"]
+    assert sent["to"] == "recipient@example.com"
+    assert "sender@example.com" not in sent["body"]
+    assert "https://pawpal.example/?relay=private-token" in sent["body"]
+    assert "relay@example.com" in sent["from"]
+
+
+def test_optional_relay_attachment_is_only_sent_when_selected(monkeypatch, tmp_path):
+    sent = {}
+    monkeypatch.setattr(email_service, "BASE_DIR", tmp_path)
+    monkeypatch.setenv("SMTP_HOST", "smtp.test.invalid")
+    monkeypatch.setenv("SMTP_PORT", "587")
+    monkeypatch.setenv("SMTP_USE_TLS", "false")
+    monkeypatch.setenv("EMAIL_FROM", "relay@example.com")
+    private_dir = tmp_path / "data" / "uploads" / "private-messages"
+    private_dir.mkdir(parents=True)
+    selected_file = private_dir / "selected-coupon.pdf"
+    selected_file.write_bytes(b"%PDF-test")
+
+    class FakeSMTP:
+        def __init__(self, host, port, timeout):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def send_message(self, message):
+            sent["attachments"] = [part.get_filename() for part in message.iter_attachments()]
+
+    monkeypatch.setattr(email_service.smtplib, "SMTP", FakeSMTP)
+    no_file = email_service.send_relay_notification(
+        "recipient@example.com", "LF-011", "Hello", "private-token"
+    )
+    assert no_file["sent"]
+    assert sent["attachments"] == []
+
+    selected = email_service.send_relay_notification(
+        "recipient@example.com", "LF-011", "Hello", "private-token",
+        attachment_path=str(selected_file), attachment_name="selected-coupon.pdf",
+    )
+    assert selected["sent"]
+    assert sent["attachments"] == ["selected-coupon.pdf"]
+
+
+def test_message_draft_is_editable_template_without_api_key(monkeypatch):
+    monkeypatch.setattr(message_drafts, "_load_local_env", lambda: None)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    draft = message_drafts.generate_message_draft(
+        "Possible match",
+        source_report={"case_id": "LF-011", "contact_email": "hidden@example.com"},
+        target_report={"case_id": "LF-012"},
+    )
+    assert not draft["generated"]
+    assert "LF-011" in draft["text"] and "LF-012" in draft["text"]
+    assert "hidden@example.com" not in draft["text"]
+
+
+def test_ai_message_draft_uses_report_details_but_not_private_email(monkeypatch):
+    monkeypatch.setattr(message_drafts, "_load_local_env", lambda: None)
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    captured = {}
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return json.dumps({"output": [{"type": "message", "content": [{
+                "type": "output_text", "text": "Hello, could you compare the markings?",
+            }]}]}).encode()
+
+    def fake_urlopen(request, timeout):
+        captured["body"] = request.data.decode()
+        captured["timeout"] = timeout
+        return FakeResponse()
+
+    monkeypatch.setattr(message_drafts, "urlopen", fake_urlopen)
+    draft = message_drafts.generate_message_draft(
+        "Possible match",
+        source_report={"case_id": "LF-011", "contact_email": "hidden@example.com"},
+        target_report={"case_id": "LF-012"},
+    )
+    assert draft["generated"]
+    assert draft["text"] == "Hello, could you compare the markings?"
+    assert "hidden@example.com" not in captured["body"]
+    assert "LF-011" in captured["body"]
+
+
+def test_listing_otp_email_is_sent_to_owner(monkeypatch):
+    sent = {}
+    monkeypatch.setenv("SMTP_HOST", "smtp.test.invalid")
+    monkeypatch.setenv("SMTP_PORT", "587")
+    monkeypatch.setenv("SMTP_USE_TLS", "false")
+    monkeypatch.setenv("EMAIL_FROM", "relay@example.com")
+
+    class FakeSMTP:
+        def __init__(self, host, port, timeout):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def send_message(self, message):
+            sent["to"] = message["To"]
+            sent["body"] = message.get_content()
+
+    monkeypatch.setattr(email_service.smtplib, "SMTP", FakeSMTP)
+    result = email_service.send_listing_otp("owner@example.com", "LF-011", "123456")
+    assert result["sent"]
+    assert sent["to"] == "owner@example.com"
+    assert "123456" in sent["body"] and "10 minutes" in sent["body"]

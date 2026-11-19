@@ -1,208 +1,97 @@
-# 🐾 PawPal Reunite — Lost & Found Pet Matcher
+# PawPal
 
-**PawPal Reunite** matches lost pets with found pets. Upload a photo, share an
-approximate location, and get ranked possible matches — each with a score,
-human-readable reasons, and the sources it came from. A match is **never** a
-confirmation of identity: always verify in person with photos and vet records.
+PawPal is a small Streamlit app for lost and found dog reports. Add a report,
+keep its case ID, and use that ID to find possible matches. The app can compare
+dog photos with a vision-language model (VLM), then add dog details and distance
+to a 0–100 similarity score. Scores are a ranking aid, not proof of identity.
 
-## Original project
+## Run locally
 
-The original project is **PawPal+ (Module 2)**, from
-https://github.com/codepath/ai110-module2show-pawpal-starter — a Streamlit
-pet-care daily planner skeleton. It let an owner enter pet info and tasks
-(duration + priority) and was supposed to generate a daily schedule, but the
-"Generate schedule" button was not implemented: it only showed "Not implemented
-yet." There was no scheduling logic, no tests, and no AI feature.
+1. Install Python dependencies with `python -m pip install -r requirements.txt`.
+2. Set `DATABASE_URL` in `.env` to a PostgreSQL database. The app creates its
+   report table and case ID sequence automatically.
+3. To enable VLM photo comparison, set `OPENAI_API_KEY` in `.env`. The default
+   model is `gpt-6.1-terra`; change it with `OPENAI_VLM_MODEL` if needed.
+   The same key enables AI message drafts; drafts are editable before sending.
+4. To send case-ID and message notifications, configure `SMTP_HOST`,
+   `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, and `EMAIL_FROM` in `.env`.
+   Set `PAWPAL_PUBLIC_URL` to the app's reachable URL so recipients can open
+   private reply links.
+5. Start the app with `streamlit run app.py`.
 
-This final project **extends PawPal+ into a different job — reuniting lost and
-found pets — instead of a daily plan.** It keeps the Streamlit UI and the
-owner/pet form idea, and adds: Roboflow computer vision, keyword retrieval
-(RAG-lite) over breed/search guidance, a weighted matcher, an agentic workflow
-with a human-in-the-loop verifier, fuzzed location sharing with a map,
-guardrails, an anonymous-reward system, and a test harness. Nothing from the
-starter's daily-plan logic is reused, because there was none to reuse.
+The repository includes sample dog reports. Each listing has a visible case
+ID. New reports and private owner emails are stored in PostgreSQL; emails are
+never displayed to other users. Photos are stored under `data/uploads/` and
+their paths are saved with the reports. Lost-report owners receive their case
+ID by email when SMTP is configured.
 
-## What it does
+Search reports also includes three clearly labeled real-photo test cases using
+Unsplash dog photos. The exact-photo case is a positive control that reuses the
+same image; the separate-photo case is not labeled as a different dog because
+its identity is unknown. Run `python eval/real_photo_smoke.py` to inspect image
+dimensions and match components. The live VLM comparison runs only when
+`OPENAI_API_KEY` is configured.
 
-- **Report Lost / Found** — pet attributes, optional photo, opt-in location
-  (preset Bay Area place, lat/lon entry, or pasted "my location" coordinates).
-  Exact coordinates are stored only for matching; the public display is fuzzed
-  to ~500 m and never shows a home address. No phone/email is shown publicly.
-- **Find Matches** — agent flow: Intake → Vision → Retriever/Matcher →
-  Verifier (you confirm/correct vision attributes) → Notifier (draft message
-  only, nothing is sent). Scores: ≥70 likely, 50–69 possible, <50 not shown.
-- **Map** — all reports on a map using fuzzed locations only.
-- **Rewards & Anonymous Hints** — see below.
-- **How It Works / Testing** — architecture, scoring weights, live test output.
+## Use
 
-## Computer vision (Roboflow)
+- **Add report:** record a lost or found dog, its details, nearest location,
+  and photo. Its contact email is inherited privately from your account.
+- **Find match:** select one of your case IDs; PawPal searches all opposite-type
+  listings by features, photo, and location. You do not need another person's ID.
+- **Search report:** browse sample and saved reports as cards, filter them, and
+  open a private chat or manage a saved listing from its card. Edit/delete
+  requires a one-time email code.
+- **Communication:** use the Teams-style chat list to select a conversation.
+  PawPal drafts an editable reply when a chat is selected. Found-report owners
+  can start a chat with a lost-report owner here.
 
-`vision.py` uses the Roboflow Inference SDK (`inference-sdk`,
-`InferenceHTTPClient`). Model ID comes from `ROBOFLOW_MODEL_ID`
-(default: public Universe pets model `pets-64nid-kbcey/1`); the API key comes
-from `ROBOFLOW_API_KEY`. **No API key was available for this build, so no live
-Roboflow call was made or claimed.** Without a key (or if the call fails), the
-app uses a clearly-labelled **DEMO fallback**: attributes come from your manual
-entry, `mode="demo"`, `confidence=None`, and the UI says "DEMO fallback — not
-a model prediction." A breed is only reported when a live model actually
-returned that label. Bounding boxes are drawn with PIL when a live prediction
-returns them.
+Log in or register before using the four app pages. Registration verifies the
+email address by OTP. Each account sees only chats where it is a participant.
+Chat names show usernames with report IDs; email addresses stay private.
+Messages and attachments are stored in PostgreSQL and expire after seven days.
 
-## Rewards & anonymous hints — no money moves in this app
+The local login screen includes two sample accounts: **Lost Demo**
+(`demo.lost@example.invalid`, `LostDemo!234`) and **Found Demo**
+(`demo.finder@example.invalid`, `FoundDemo!234`). They share a preloaded report
+pair and sample chat.
 
-- When reporting a **lost** pet, the owner may optionally pledge a reward
-  ($0–$500, $0 = no reward). A pledge is a promise only. **The app moves NO
-  money and takes NO payment details.**
-- Anyone with a hint submits it **anonymously by case ID only**: hint text +
-  optional location + optional photo. No name, phone, or email is collected
-  or shown. The owner sees hints under the case ID, never who sent them.
-- The owner can mark a hint "helpful". Only a hint marked **"led to reunion"**
-  by the owner, after the owner confirms the pet is reunited, becomes
-  reward-eligible. **Only ONE reward per case** — the first eligible hint only.
-- On eligibility the app generates a one-time claim code
-  (`RWD-<case>-<6 random chars>`), shown to the owner and to the anonymous
-  hint-submitter on their submission receipt screen. **The submitter must save
-  it — there is no contact channel to send it later.** The owner honours it
-  outside the app by their chosen method, then marks it claimed
-  (pledged → eligible → claimed). No payment details, no cash handover
-  arranged in the app, no direct messaging.
+AI drafts use `OPENAI_API_KEY`. A PDF, JPG, or PNG can be attached by choice;
+no coupon or other file is added automatically. Email codes and private-message
+notifications need SMTP configuration. The code expires after ten minutes and
+can only be used once.
 
-## Architecture
+## Match score
 
-See `diagrams/architecture.mmd` (Mermaid source) and `diagrams/uml.mmd`.
+When both reports have a photo and `OPENAI_API_KEY` is configured, one batched
+VLM request compares the query photo with up to 12 candidate photos. The VLM
+photo similarity contributes 90% of the score, dog details contribute 7%, and
+distance contributes up to 3 points:
 
-```
-User (Streamlit) → Intake → Vision (Roboflow / demo) → Verifier (human-in-the-loop)
-                 → Retriever (keyword RAG over data/knowledge + profiles)
-                 → Matcher (weighted 0–100) → Ranked matches + fuzzed map
-                 → Notifier (draft only) + Rewards & Anonymous Hints
-                 → Logging (logs/app.log) + agent trace (ai_interactions.md)
-```
+| Distance from the other report | Location points |
+| --- | ---: |
+| 0–2 km | 3 |
+| Over 2–5 km | 2 |
+| Over 5–10 km | 1 |
+| Over 10 km | 0 |
 
-Matching weights (max 100): species must match (else 0), breed +30, colour
-+20, size +10, sex +5, markings overlap +15 (5 per shared keyword, cap 15),
-date within 7 days +5, distance ≤2 km +15, 2–5 km +10, 5–15 km +5, >15 km 0.
+Missing score components are omitted and the remaining weights are normalized.
+If VLM photo matching is unavailable, the UI says the result uses dog details
+and distance only. Photo comparison sends the report photos to the configured
+OpenAI VLM endpoint; case IDs are included only to label candidate results.
+Date and reward information are not used in matching.
 
-## Setup
+Private message bodies are stored in PostgreSQL, email addresses are not shown
+in report cards or message bodies, and each conversation is limited to three
+new threads per report per hour. SMTP notifications use the configured
+`EMAIL_FROM` address; the app does not create a mailbox. Replies are sent in
+PawPal and notified by email.
 
-```bash
-git clone <your-repo-url> applied-ai-system-final
-cd applied-ai-system-final
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-# optional, for live Roboflow vision:
-cp .env.example .env   # then set ROBOFLOW_API_KEY
-streamlit run app.py
-```
+## Demo data
 
-Open http://localhost:8501. Without a key the app runs fully in demo vision mode.
-
-## Sample interactions (real outputs)
-
-### 1. Find a match — lost Golden Retriever (Biscuit, LF-001)
-
-Input: dog, golden retriever, golden, large, male, markings "white chest
-patch", 2026-11-10, Central Park, Fremont (37.5515, -121.9678).
-
-```
-PASS | Golden retriever lost -> found LF-002 | top=LF-002 score=100 expected=LF-002
-```
-
-Top match LF-002, score **100/100**, reasons: "Breed matches: golden
-retriever", "Colour matches: golden", "Size matches: large", "Sex matches:
-male", "Markings overlap (15 pts): chest, patch, white", "Dates within 7
-days (2026-11-10 vs 2026-11-11)", "Found 0.9 km from last seen (within 2 km)".
-Warning shown: "Likely match — please verify in person with photos, vet
-records, and distinctive markings before claiming. This system does not
-confirm identity." Retrieved source: `data/knowledge/breed_profiles.md`.
-
-### 2. No match — species mismatch
-
-Input: cat described as a golden retriever. Output: score **0**, reason
-"Species does not match — cannot be the same pet." No matches shown.
-
-### 3. Anonymous hint + reward-eligible
-
-```
-Pledge:  LF-001, $100, status=pledged
-Hint:    HINT-XXXXXX — "Saw a golden near Lake Elizabeth at dusk" (anonymous, no identity stored)
-Reunion: owner marks hint "led to reunion" -> reward_eligible=True
-Claim code: RWD-LF-001-XXXXXX   (format RWD-<case>-<6 chars>, shown to owner and on the submitter's receipt)
-Status:  pledged -> eligible -> claimed (owner marks claimed after honouring it outside the app)
-```
-
-(Exact hint IDs / claim codes are random per run; the format and flow above
-were verified by the unit tests in `tests/test_pawpal.py`.)
-
-## Testing summary
-
-```
-$ python -m pytest -q
-.................  [100%]
-17 passed in 0.22s
-
-$ python eval/evaluate.py
-PASS | Golden retriever lost -> found LF-002 | top=LF-002 score=100 expected=LF-002
-PASS | Tabby cat lost -> found LF-004 | top=LF-004 score=95 expected=LF-004
-PASS | Beagle lost -> found LF-006 | top=LF-006 score=95 expected=LF-006
-PASS | Black lab lost in Union City -> LF-008 surfaces at 75 despite sex/distance mismatch (KNOWN LIMIT: sex is only 5 pts) | top=LF-008 score=75 expected=LF-008
-PASS | Species mismatch -> no match | top=None score=0 expected=None
-PASS | Orange tabby found -> lost? none in DB (no lost orange tabby) | top=None score=0 expected=None
-SUMMARY: 6/6 passed
-```
-
-**What the tests cover (17 pytest tests):** haversine distance (same point = 0, Fremont–San Jose ~20–30 km), location fuzzing (exact coordinates never in the display string), species mismatch = 0, full match = 100, breed-only = 30, date proximity (±5 pts), low-confidence guardrail wording, `safe_display` removing contact details and exact location, vision demo fallback labelling, retrieval returning sources, `find_matches` filtering (<50 hidden, lost matches found only). **Rewards (5 tests):** $0 pledge can never become eligible, $500 cap enforced, only one eligible hint per case, claim-code format `RWD-<case>-<6 chars>` and uniqueness, hints carry no identity fields.
-
-**What did not work / known limits:** the Black Lab eval case exposed a real weakness — a male lost dog in Union City still scores 75 against a female found dog in San Jose, because sex is worth only 5 points and breed+colour+size+markings dominate. The score is honest, but it means "likely" can include a sex mismatch; the UI's verify-in-person warning is the mitigation, and raising the sex weight is the obvious next fix. The demo vision fallback is also a limit, not a feature: without a Roboflow API key there is no live prediction to evaluate.
-
-## Design decisions & trade-offs
-
-- **No paid LLM API.** Retrieval is keyword-based over curated local docs and
-  the profile database, so the app runs offline and reproducibly. Trade-off:
-  it cannot understand synonyms ("golden" vs "blonde") — matching is exact on
-  normalised attributes, which is honest about its limits.
-- **Public Roboflow model, demo fallback.** A public breed model only covers
-  a few breeds, so we never claim a breed the model did not return, and the
-  demo fallback is labelled, not dressed up as a prediction.
-- **Location fuzzing over precision.** Exact coordinates would match better,
-  but a lost-pet app that publishes home addresses is unsafe. We accept
-  ~500 m fuzzing and use exact coordinates only internally for distance.
-- **Human-in-the-loop verifier.** Vision and matching are fallible; the user
-  confirms attributes before matching, and every match carries a
-  verify-in-person warning.
-- **Anonymous hints, no messaging.** No contact channel means no harassment
-  vector and no identity leak — at the cost that a hint-submitter who loses
-  their claim code cannot be reached.
-
-## Existing apps vs PawPal Reunite
-
-Commercial apps do pieces of this separately: **Pettify** and **Patter** are
-breed/age care planners with an AI assistant; **Pawly** tracks medical records
-and care plans; **FurID** and Pet Breed Scanner identify breeds from a photo;
-**Puppii** and **Sniffy** scan food/photos for toxic items. None of them
-combines, in one open, runnable project: lost/found matching + Roboflow vision
-+ retrieval with shown sources + fuzzed location sharing + anonymous hints
-with a reward claim code + guardrails + a test harness with published
-pass/fail results. They are also closed, paid apps; PawPal Reunite is open
-source and its reliability is checkable from the repo.
-
-## Reproducible execution evidence
-
-```bash
-python -m pytest -q
-python eval/evaluate.py
-streamlit run app.py --server.headless true   # then open http://localhost:8501
-```
-
-See "Testing summary" above and `eval/results.txt` for the real outputs.
-
-## Reflection (portfolio)
-
-This project says about me as an AI engineer: I can take a thin starter and
-turn it into a complete, responsible system — retrieval, vision, an agentic
-flow, location privacy, and reliability testing — without pretending the AI is
-more certain than it is. The interesting work was not the model, it was the
-guardrails: fuzzing locations, labelling demo results, refusing to confirm an
-identity, and making anonymity and "no money moves here" real in the code,
-not just in the copy. See `model_card.md` for the full reflection.
+To add one labeled lost/found pair and a sample private conversation for the
+Communication page, set
+`PAWPAL_DEMO_LOST_EMAIL` and `PAWPAL_DEMO_FOUND_EMAIL` in the ignored `.env`
+file, then run `python seed_demo_data.py`. The script is safe to rerun. It only
+sends email if SMTP is configured. Without SMTP, the conversation remains
+available as a local sample in the Communication page; listing changes that
+need OTP verification stay locked until email delivery is configured.

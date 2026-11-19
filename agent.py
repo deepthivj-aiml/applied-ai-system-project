@@ -19,6 +19,7 @@ BASE = Path(__file__).parent
 LOG_PATH = BASE / "logs" / "app.log"
 TRACE_PATH = BASE / "ai_interactions.md"
 
+LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
 logging.basicConfig(filename=str(LOG_PATH), level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("pawpal-reunite")

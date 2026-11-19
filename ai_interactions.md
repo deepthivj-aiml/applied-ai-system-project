@@ -98,3 +98,67 @@
   }
 }
 ```
+
+## Agent Trace — 2026-11-18T13:01:52
+
+```json
+{
+  "started_at": "2026-11-18T13:01:52",
+  "steps": [
+    {
+      "step": "1-intake",
+      "status": "lost",
+      "species": "dog",
+      "place": "Central Park / Lake Elizabeth, Fremont"
+    },
+    {
+      "step": "2-vision",
+      "mode": "skipped",
+      "note": "No photo uploaded."
+    },
+    {
+      "step": "3-verifier",
+      "note": "Manual attributes used (demo mode or no photo)."
+    },
+    {
+      "step": "4-retriever",
+      "sources": [
+        "data/knowledge/breed_profiles.md",
+        "data/knowledge/lost_pet_search.md",
+        "data/knowledge/coat_colours.md"
+      ]
+    },
+    {
+      "step": "5-matcher",
+      "matches": [
+        {
+          "case_id": "LF-002",
+          "score": 90
+        }
+      ]
+    },
+    {
+      "step": "6-notifier",
+      "draft_created": true,
+      "note": "Draft only. Nothing is sent by the app."
+    }
+  ],
+  "query": {
+    "status": "lost",
+    "name": "Biscuit",
+    "species": "dog",
+    "breed": "golden retriever",
+    "colour": "golden",
+    "size": "small",
+    "sex": "male",
+    "markings": "white chest patch",
+    "date": "2026-11-18",
+    "lat": 37.5515,
+    "lon": -121.9678,
+    "place_label": "Central Park / Lake Elizabeth, Fremont",
+    "share_location": true,
+    "photo": null,
+    "reward_pledge": 0.0
+  }
+}
+```
